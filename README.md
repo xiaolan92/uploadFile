@@ -115,3 +115,111 @@ app.listen(port);
 
 ```
 
+------
+
+- 多图片上传，上传进度
+
+  ```
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+      <meta charset="UTF-8">
+      <title>Title</title>
+  </head>
+  <body>
+  <input type="file" name="f1" id="f1" accept="image/*,video/*" multiple>
+  <button type="button" id="btn-submit">上传文件</button>
+  <script>
+  
+  
+    // 上传进度
+    function uploadPropress(event){
+      if(event.lengthComputable){
+        const completePercent = (event.loaded / event.total * 100).toFixed(2);
+        console.log(completePercent);
+  
+      }
+    }
+    function ajax(url,fd){
+     return new Promise((resolve,reject)=>{
+       const xhr = new XMLHttpRequest();
+       xhr.open("POST",url,true);
+       xhr.onreadystatechange = function (){
+         if(this.readyState === 4){
+           resolve();
+         }
+       }
+       xhr.upload.onprogress = uploadPropress;
+       xhr.send(fd);
+  
+     })
+    }
+   async  function uploadFile (){
+        const file = document.getElementById('f1').files;
+        const formData = new FormData();
+        for (let i=0;i<file.length;i++){
+            formData.append('file',file[i])
+        }
+  
+        await ajax("http://localhost:8000/uploadFile/",formData);
+        console.log("文件上传成功!")
+    }
+    document.getElementById('btn-submit').addEventListener('click',uploadFile);
+  </script>
+  
+  </body>
+  </html>
+  
+  ```
+
+  ```
+  const express = require("express");
+  const mutilparty = require("multiparty");
+  const fs = require('fs');
+  const app = express();
+  
+  const port = 8000;
+  
+  app.all('*', function (req, res, next) {
+      res.header("Access-Control-Allow-Origin", "*");
+      res.header('Access-Control-Allow-Methods', 'PUT, GET, POST, DELETE, OPTIONS');
+      res.header("Access-Control-Allow-Headers", "X-Requested-With");
+      res.header('Access-Control-Allow-Headers', ['mytoken','Content-Type']);
+  
+      if (req.method.toLowerCase() === 'options') {
+          res.sendStatus(200);
+      } else {
+          next();
+      }
+      });
+  
+  app.post("/uploadFile",function (req, res) {
+      const form = new mutilparty.Form({
+          uploadDir:'./uploads'
+      })
+      form.parse(req,function (err,fields,files){
+          if(!err){
+              const [file] = files.file;
+              // 在根目录下手动创建uploads目录
+              const uploadFilePath = "uploads/";
+              files.file.forEach(item =>{
+                  fs.rename(item.path,uploadFilePath+item.originalFilename,function (err){
+  
+                  });
+              })
+              res.send("{'status':200, 'message': '上传成功！'}");
+  
+          }
+  
+      })
+  
+  })
+  
+  
+  
+  
+  app.listen(port);
+  
+  ```
+
+  
