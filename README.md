@@ -586,6 +586,279 @@ app.listen(port);
     
     ```
 
-    
+    - 断点续传(有点复杂)
+
+      ```
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+          <meta charset="UTF-8">
+          <title>Title</title>
+      </head>
+      <body>
+      <input type="file" id="f1" name="file">
+      <div id="totalPercent">0</div>
+      <div id="upload"></div>
+      <button type="button" id="btn-submit">上传文件</button>
+      <button type="button" id="btn-submit-pause">暂停上传</button>
+      <script>
+          const uploadpercentArr = [];
+          function getHash(fileChunksList){
+              return new  Promise((resolve)=>{
+                  let fileHash = '';
+                  let hashPercent = '';
+                  const worker =  new Worker('./hash.js')
+                  worker.postMessage({fileChunksList});
+                  worker.onmessage = e =>{
+                      const {hash,percent} = e.data;
+                      hashPercent = percent;
+                      if(hash){
+                          fileHash = hash;
+                          resolve({
+                              fileHash,
+                              percent:hashPercent
+                          })
+                      }
+      
+      
+      
+                  }
+      
+              })
+      
+          }
+          let requestList = [];
+          // 已上传文件部分
+          let uploadedFileList = []
+          function beforeUpload (){
+              return new Promise((resolve)=>{
+                  const xhr = new XMLHttpRequest();
+                  xhr.open("GET","http://localhost:8000/getChunksUploaded/",true);
+                  xhr.onreadystatechange = function (){
+                      if(this.readyState === 4){
+                          resolve(JSON.parse(xhr.responseText).uploadedFileList);
+      
+                      }
+                  }
+                  xhr.send();
+              })
+      
+          }
+          function isUploaded (fileHash,i){
+             return  uploadedFileList.includes(`${fileHash}-${i}`)
+      
+          }
+          // 大小限制为2M
+          let  chunkSize;
+          let file;
+          let  chunks;
+          let token;
+      
+          let name,
+              chunkCount,
+              sendChunkCount;
+           async function UploadFile  (){
+               file = document.getElementById('f1').files[0];
+               chunkSize = 2*1024*1024;
+               chunks = [];
+               token  = (+ new Date());
+               name = file.name;
+               chunkCount = 0;
+               sendChunkCount = 0
+               uploadedFileList =   await beforeUpload();
+              if(file.size > chunkSize){
+                  let start =0,
+                      end = 0;
+                  while (true){
+                      end+=chunkSize;
+                      const blob = file.slice(start,end);
+                      start+=chunkSize;
+      
+                      if(!blob.size){
+                          break;
+      
+                      }
+                      chunks.push(blob)
+                  }
+      
+              }else{
+                  chunks.push(file.slice(0))
+              }
+              chunkCount = chunks.length;
+      
+               const  {fileHash,percent} = await getHash(chunks);
+              for (let i=0;i<chunkCount;i++){
+                  if(!isUploaded(fileHash,i)){
+                      const formData= new FormData();
+                      formData.append('fileHash',fileHash);
+                      formData.append('file',chunks[i]);
+                      formData.append('index',i);
+                      xhrSend(formData,null,i)
+                  }else{
+                      uploadpercentArr[i] = 1;
+      
+                  }
+      
+      
+              }
+              const elPropress =  document.getElementById('totalPercent');
+      
+              function xhrSend (fd,fn,i){
+                  // 上传进度
+                  function updatePropress(event){
+                      if(event.lengthComputable){
+                          const completePercent = (event.loaded / event.total).toFixed(2);
+                          if(i !==undefined){
+                              uploadpercentArr[i] = completePercent;
+      
+                              let totalUpload= uploadpercentArr.map((item,index) => item * chunks[index].size).reduce((a,b)=>a+b);
+                              elPropress.innerHTML = (parseFloat(elPropress.innerHTML) >((totalUpload / file.size* 100 ).toFixed(2)) ?  parseFloat(elPropress.innerHTML) : (totalUpload / file.size* 100 ).toFixed(2)) +'%';
+      
+                          }
+      
+      
+                      }
+                  }
+                  const xhr = new XMLHttpRequest();
+                  xhr.open("POST","http://localhost:8000/uploads/",true);
+                  xhr.onreadystatechange = function (){
+                      if(this.readyState === 4){
+                          fn?.();
+                      }
+                  }
+                  xhr.upload.onprogress = updatePropress;
+                  xhr.send(fd);
+                  xhr.onload = ()=>{
+                      if(i!==null){
+                          sendChunkCount +=1;
+                      }
+                      if(sendChunkCount  + uploadedFileList.length===chunkCount){
+                              const mergeFormData = new FormData();
+                              mergeFormData.append('type','merge');
+                              mergeFormData.append('token',token);
+                              mergeFormData.append('chunkCount',chunkCount);
+                              mergeFormData.append('fileHash',fileHash);
+                              mergeFormData.append('fileName',name);
+                              xhrSend(mergeFormData);
+      
+                      }
+                      // 请求完成,就从请求队列中清除
+                      const xhrIndex = requestList.findIndex(item=> item === xhr);
+                      requestList.splice(xhrIndex,1);
+      
+                  }
+      
+                  requestList.push(xhr);
+      
+      
+              }
+          }
+          function pause (){
+              requestList.forEach(xhr=>xhr.abort());
+              requestList = []
+          }
+          document.getElementById('btn-submit').addEventListener('click',UploadFile)
+          document.getElementById('btn-submit-pause').addEventListener('click',pause)
+      
+      </script>
+      
+      </body>
+      </html>
+      
+      ```
+
+      
+
+           ```
+           const express = require("express");
+           const mutilparty = require("multiparty");
+           const fs = require('fs');
+           const app = express();
+           
+           
+           
+           const port = 8000;
+           app.all('*', function (req, res, next) {
+               res.header("Access-Control-Allow-Origin", "*");
+               res.header('Access-Control-Allow-Methods', 'PUT, GET, POST, DELETE, OPTIONS');
+               res.header("Access-Control-Allow-Headers", "X-Requested-With");
+               res.header('Access-Control-Allow-Headers', ['mytoken','Content-Type']);
+               if (req.method.toLowerCase() === 'options') {
+                   res.sendStatus(200);
+               } else {
+                   next();
+               }
+           });
+           
+           
+           app.post('/uploads',function (req, res){
+               const form = new mutilparty.Form({
+                   uploadDir:'./temp-uploads'
+               })
+               form.parse(req,function (err,fields,files){
+                   if(!err){
+           
+                       if(fields.type){
+           
+                           const [fileName] = fields.fileName;
+                           const [chunkCount] = fields.chunkCount;
+                           const [fileHash] = fields.fileHash;
+                           const writeStream = fs.createWriteStream(`./uploads/${fileName}`);
+           
+           
+                           let cindex=0;
+                           //合并文件
+                           function fnMergeFile(){
+                               const fname = `./temp-uploads/${fileHash}-${cindex}`;
+                               const readStream = fs.createReadStream(fname);
+                               readStream.pipe(writeStream, { end: false });
+                               readStream.on("end", function () {
+                                   fs.unlink(fname, function (err) {
+                                       if (err) {
+                                           throw err;
+                                       }
+                                   });
+                                   if (cindex+1 < chunkCount){
+                                       cindex += 1;
+                                       fnMergeFile();
+                                   }
+                               });
+                           }
+                           fnMergeFile();
+                           res.send("{'status':200, 'message': '上传成功！'}");
+           
+                       }else{
+                           const [file] = files.file;
+                           const [index] = fields.index;
+                           const [fileHash] = fields.fileHash;
+                           fs.rename(file.path,`./temp-uploads/${fileHash}-${index}`,function (err){
+                               if(err){
+                                   // res.writeHead(200,{'content-Type':'text/plain;charset=uft-8'});
+                                   res.send("{'status':200, 'message': '上传失败！'}");
+                               }else{
+                                   // res.writeHead(200,{'content-Type':'text/plain;charset=uft-8'});
+                                   res.send("{'status':200, 'message': '上传成功！'}");
+                               }
+                           });
+                       }
+           
+           
+                   }
+           
+           
+               });
+           })
+           app.get("/getChunksUploaded",function (req, res){
+               fs.readdir("./temp-uploads",function (err,files){
+                   res.send(JSON.stringify({
+                       uploadedFileList:files.filter(item=> item !== '.DS_Store') ?? []
+                   }))
+           
+               })
+           
+           })
+           app.listen(port)
+           
+           ```
 
     
