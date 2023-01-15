@@ -222,7 +222,7 @@ app.listen(port);
   
   ```
 
-- 多图片上传，多上传进度
+- 多图片上传(多预览)，多上传进度
 
   ```
   <!DOCTYPE html>
@@ -401,4 +401,191 @@ app.listen(port);
   
   ```
 
-  
+  ------
+
+  - 分片上传(带上传进度)  原理:利用bolb.slice 对图片/视频进行分割，然后上传完之后发送合并请求.
+
+    ```
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Title</title>
+    </head>
+    <body>
+    <input type="file" id="f1" name="file">
+    <div id="totalPercent">0</div>
+    <button type="button" id="btn-submit">上传文件</button>
+    <script>
+        function UploadFile (){
+            // 大小限制为2M
+            const chunkSize = 2*1024*1024;
+            const file = document.getElementById('f1').files[0];
+            const chunks = [];
+            const token  = (+ new Date());
+            let name = file.name,
+                 chunkCount = 0,
+                sendChunkCount = 0;
+            if(file.size > chunkSize){
+                let start =0,
+                      end = 0;
+                while (true){
+                    end+=chunkSize;
+                    const blob = file.slice(start,end);
+                    start+=chunkSize;
+    
+                    if(!blob.size){
+                        break;
+    
+                    }
+                    chunks.push(blob)
+                }
+    
+            }else{
+                chunks.push(file.slice(0))
+            }
+            chunkCount = chunks.length;
+    
+            for (let i=0;i<chunkCount;i++){
+                const formData= new FormData();
+                formData.append('token',token);
+                formData.append('file',chunks[i]);
+                formData.append('index',i);
+                xhrSend(formData,function (){
+                    sendChunkCount +=1;
+                    // 发送合并请求
+                    if(sendChunkCount===chunkCount){
+                        const mergeFormData = new FormData();
+                        mergeFormData.append('type','merge');
+                        mergeFormData.append('token',token);
+                        mergeFormData.append('chunkCount',chunkCount);
+                        mergeFormData.append('fileName',name);
+                        xhrSend(mergeFormData);
+    
+                    }
+                },i)
+    
+            }
+            const uploadpercentArr = [];
+            const elPropress =  document.getElementById('totalPercent')
+    
+            function xhrSend (fd,fn,i){
+                // 上传进度
+                function updatePropress(event){
+                    if(event.lengthComputable){
+                        const completePercent = (event.loaded / event.total).toFixed(2);
+                        if(i !==undefined){
+                            uploadpercentArr[i] = completePercent;
+                            // 总的上传分片进度
+                            let totalUpload= uploadpercentArr.map((item,index) => item * chunks[index].size).reduce((a,b)=>a+b);
+                            elPropress.innerHTML = (totalUpload / file.size* 100 ).toFixed(2) +'%';
+    
+                        }
+    
+    
+                    }
+                }
+                const xhr = new XMLHttpRequest();
+                xhr.open("POST","http://localhost:8000/uploads/",true);
+                xhr.onreadystatechange = function (){
+                    if(this.readyState === 4){
+                        fn?.();
+                    }
+                }
+                xhr.upload.onprogress = updatePropress;
+                xhr.send(fd);
+    
+    
+            }
+        }
+        document.getElementById('btn-submit').addEventListener('click',UploadFile)
+    
+    </script>
+    
+    </body>
+    </html>
+    
+    ```
+
+    ```
+    const express = require("express");
+    const mutilparty = require("multiparty");
+    const fs = require('fs');
+    const app = express();
+    
+    
+    
+    const port = 8000;
+    app.all('*', function (req, res, next) {
+        res.header("Access-Control-Allow-Origin", "*");
+        res.header('Access-Control-Allow-Methods', 'PUT, GET, POST, DELETE, OPTIONS');
+        res.header("Access-Control-Allow-Headers", "X-Requested-With");
+        res.header('Access-Control-Allow-Headers', ['mytoken','Content-Type']);
+        if (req.method.toLowerCase() === 'options') {
+            res.sendStatus(200);
+        } else {
+            next();
+        }
+    });
+    
+    
+    app.post('/uploads',function (req, res){
+        const form = new mutilparty.Form({
+            uploadDir:'./uploads'
+        })
+        form.parse(req,function (err,fields,files){
+            if(!err){
+                if(fields.type){
+    
+                    const [fileName] = fields.fileName;
+                    const [chunkCount] = fields.chunkCount;
+                    const writeStream = fs.createWriteStream(`./uploads/${fileName}`);
+    
+    
+                    let cindex=0;
+                    //合并文件
+                    function fnMergeFile(){
+                        const fname = `./uploads/video-${cindex}`;
+                        const readStream = fs.createReadStream(fname);
+                        readStream.pipe(writeStream, { end: false });
+                        readStream.on("end", function () {
+                            fs.unlink(fname, function (err) {
+                                if (err) {
+                                    throw err;
+                                }
+                            });
+                            if (cindex+1 < chunkCount){
+                                cindex += 1;
+                                fnMergeFile();
+                            }
+                        });
+                    }
+                    fnMergeFile();
+                    res.send("{'status':200, 'message': '上传成功！'}");
+    
+                }else{
+                    const [file] = files.file;
+                    const [index] = fields.index;
+                    fs.rename(file.path,"./uploads/video-"+index,function (err){
+                        if(err){
+                            // res.writeHead(200,{'content-Type':'text/plain;charset=uft-8'});
+                            res.send("{'status':200, 'message': '上传失败！'}");
+                        }else{
+                            // res.writeHead(200,{'content-Type':'text/plain;charset=uft-8'});
+                            res.send("{'status':200, 'message': '上传成功！'}");
+                        }
+                    });
+                }
+    
+            }
+    
+    
+        });
+    })
+    app.listen(port)
+    
+    ```
+
+    
+
+    
